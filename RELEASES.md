@@ -61,6 +61,55 @@ you took before updating.
    fetched already stays in their clone whatever you do — ship `X.Y.Z+1`
    instead.
 
+## 0.3.3 — 2026-10-27
+
+**Updating from 0.3.2: back up, pull, `up`, then two things happen.**
+Preflight re-masks every stored recording once in the background; it is
+finished when the `secret_scrub` job's line on `/health`, signed in, reads
+`left: 0 fixture(s), 0 replay(s), 0 adversarial run(s)`. Every recording stays
+replayable while it runs. Then press **Poll now** on each instance once (see
+the upgrade check below); Preflight does not poll on a schedule.
+
+**The upgrade check names the workflows a new n8n will not load.** When the
+version you are checking against no longer has a node type a workflow uses
+(n8n 3.0 removes Item Lists, Function and 35 others), that workflow is now
+reported **"will not start"**, naming the node, the type, and whether it is in
+the draft, the copy production runs, or both. Before, it read "untestable".
+It is found from the two sandboxes' node lists, so a workflow with no
+recording is judged too. Every other reason a replay cannot run still reads
+untestable. Until you poll, the check judges only each workflow's draft and
+says production's copy was not judged: n8n's API returns the draft, and
+Preflight now keeps the published copy's node names, types and versions
+beside it.
+
+**Header credentials are kept out of recordings.** n8n's Header Auth lets a
+workflow check a header with any name (`X-Secret-Key`, `X-N8N-Auth`), and
+those were stored as they arrived. Now a header whose last word is a
+credential word (`key`, `token`, `secret`, `auth`, `pin`, `nonce`, …) is
+masked, and on a Webhook or Wait node that checks Header Auth every header
+is masked except ordinary ones (content, browser, proxy, trace, and webhook
+signature and event headers). Headers recorded as name and value pairs are
+covered too. A workflow that routes on a webhook's event or signature header
+replays as it ran for recordings made after the update; one recorded before
+keeps those values masked, so re-record it.
+
+**Security fixes from the review before the first testers.**
+- A placeholder planted in a webhook body could bring a masked value from
+  the same recording chain back as readable text. The clean-up no longer
+  trusts any restore.
+- Screens that read recordings the background clean-up had not reached yet
+  now clean them as they read.
+- The replay sandbox's answers are read under a size limit
+  (`INSTANCE_RESPONSE_MAX_BYTES`), so a workflow that produces gigabytes can
+  no longer take the API down. Over the limit is a clear error naming the
+  setting, never a green.
+- A run that ended with no node data is reported as one that could not be
+  compared, not as every node vanishing.
+
+**Database:** changes; head revision `0014_published_nodes` (one new column on
+`workflows`). The API applies it at start. Back up first: docs/INSTALL.md,
+"Updating, in this order", step 1.
+
 ## 0.3.2 — 2026-10-26
 
 **The report button's health summary now sends what it promises.** Its

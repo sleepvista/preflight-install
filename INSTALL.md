@@ -65,7 +65,8 @@ Fill in:
   [Changing the database password](#changing-the-database-password)). Use
   the command's output: a password you make up yourself must not contain
   `@` or `%`, which Preflight cannot pass to its database, and it says so
-  and stops if one does.
+  and stops if one does. Nor a space: in `.env` a space followed by `#`
+  starts a comment, so the rest of the password is silently dropped.
 - **`PREFLIGHT_N8N_VERSION`** — your n8n's exact version. Preflight replays on
   its own copy of n8n at this version, and refuses to replay if your instance
   runs a different one, because a green result on another version is not
