@@ -61,6 +61,52 @@ you took before updating.
    fetched already stays in their clone whatever you do — ship `X.Y.Z+1`
    instead.
 
+## 0.3.2 — 2026-10-26
+
+**The report button's health summary now sends what it promises.** Its
+checkbox says "the status words /health shows anyone — no addresses or
+messages". It sent each background job's last result line as well, and one
+of those lines can hold an error message naming an internal address. Now
+the summary, and `/health` for anyone without the operator token, keep each
+job's name, timings, failure count and error type, and leave the sentence
+out. Signed in, you still see the full line. Found by the first end-to-end
+test of the beta with a real key; that test report held no address.
+
+**Updating from 0.3.1 or earlier: one step by hand, once.** Preflight's
+database had a default password that is printed in Preflight's source, and on
+a Linux machine anyone with an account on it could reach the database with
+it — read your recordings, change stored workflow versions, edit the audit
+log. Now `POSTGRES_PASSWORD` is required, and `docker compose up -d` stops
+with *"required variable POSTGRES_PASSWORD is missing a value"* until you set
+it. Your database keeps the old password until you change it there too, so
+follow INSTALL.md, "Changing the database password": a new value in `.env`,
+start the database alone, `\password preflight`, then `up` as usual. Nothing
+is deleted at any step; if you skip the `\password` step Preflight cannot
+sign in to the database and says so in `docker compose logs api`, and doing
+it then fixes that. The API also refuses to start on the old published
+value, so putting it in `.env` is not a way round this.
+
+**The database is also on a network of its own**, shared only with
+Preflight's API, that your machine has no address on (Docker Engine 28 or
+later). `up` creates it; nothing to do.
+
+**Security fixes from a review before the first testers.** Several checks
+that mask passwords, spot private keys and group recordings took time that
+grew with the square of their input, so a large enough webhook body could
+stall Preflight; each is now one pass, with identical results. A capture
+token revoked while a report was uploading can no longer deliver it. Error
+text from your n8n now reaches an AI assistant marked as untrusted, like the
+rest. A `password=…` at the very start of a form-encoded string is now
+masked in stored recordings, and recordings or replays made before a clean-up
+pass reached them no longer keep raw values. **After updating, Preflight
+re-masks every stored recording once in the background**. It is finished
+when the `secret_scrub` job's last result, on `/health` while you are signed
+in, reads `left: 0 fixture(s), 0 replay(s), 0 adversarial run(s)`. Every
+recording stays replayable while it runs.
+
+**Database:** unchanged; head revision stays `0013_deploy_integrity`. Its
+password changes, by the step above; its contents do not.
+
 ## 0.3.1 — 2026-10-25
 
 **Install this one, not 0.3.0.** It is the same Preflight as 0.3.0 — read

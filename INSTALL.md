@@ -57,6 +57,15 @@ Fill in:
 
   Set it once, before registering anything. Changing it later makes the keys
   already stored unreadable.
+- **`POSTGRES_PASSWORD`** — the password of Preflight's own database, which
+  holds your recordings, workflow versions and audit log. Run the same
+  command again and paste its output; use a different value from
+  `PREFLIGHT_SECRET`. The database takes it when it is first created and
+  keeps it, so set it before the first start (to change it later, see
+  [Changing the database password](#changing-the-database-password)). Use
+  the command's output: a password you make up yourself must not contain
+  `@` or `%`, which Preflight cannot pass to its database, and it says so
+  and stops if one does.
 - **`PREFLIGHT_N8N_VERSION`** — your n8n's exact version. Preflight replays on
   its own copy of n8n at this version, and refuses to replay if your instance
   runs a different one, because a green result on another version is not
@@ -177,13 +186,53 @@ docker compose cp ./preflight-backup.sql postgres:/tmp/preflight-backup.sql
 docker compose exec -T postgres psql -U preflight -q -f /tmp/preflight-backup.sql preflight
 ```
 
+## Changing the database password
+
+The database reads `POSTGRES_PASSWORD` once, when it is first created, and
+keeps its own copy after that. Changing `.env` alone therefore leaves
+Preflight unable to sign in to it: nothing is lost, but the page stops
+working and `docker compose logs api` says `password authentication failed`.
+Do it in this order instead.
+
+**Installed with 0.3.1 or earlier? Do this once when you update.** Those
+releases gave the database a default password that is printed in Preflight's
+source, and `docker compose up -d` now stops with *"required variable
+POSTGRES_PASSWORD is missing a value"* until you replace it.
+
+1. Make a new value with the command in step 2 and put it in `.env` as
+   `POSTGRES_PASSWORD=...`.
+2. Start the database on its own:
+
+   ```
+   docker compose up -d postgres
+   ```
+
+3. Give the database the same value. Paste it when asked, twice; nothing
+   shows as you type:
+
+   ```
+   docker compose exec postgres psql -U preflight -d preflight -c "\password preflight"
+   ```
+
+4. Start everything:
+
+   ```
+   docker compose up -d
+   ```
+
 ## If something goes wrong
 
 - **The page does not load.** `docker compose ps` shows what is running;
   `docker compose logs api` says why the API is not. A message naming
   `PREFLIGHT_SECRET` means it is missing or under 16 characters.
 - **`required variable … is missing a value`.** `.env` is missing, misspelled,
-  or not in this folder.
+  or not in this folder. If it names `POSTGRES_PASSWORD` and Preflight has
+  run here before, see
+  [Changing the database password](#changing-the-database-password).
+- **`password authentication failed`, or a message naming
+  `POSTGRES_PASSWORD`, in `docker compose logs api`.** The database and
+  `.env` disagree, or `.env` still has the old published value. See
+  [Changing the database password](#changing-the-database-password).
 - **A replay refuses with two different n8n versions.** `PREFLIGHT_N8N_VERSION`
   and the version you declared for the instance disagree. Fix whichever is
   wrong, then `docker compose up -d`.

@@ -1,12 +1,13 @@
-# Preflight, pointed at the n8n you already run. Generated for release 0.3.1
+# Preflight, pointed at the n8n you already run. Generated for release 0.3.2
 # from the file the Preflight repository tests; do not edit it by hand.
 #
 #   docker compose up -d
 #
-# Two values are required in .env and the stack refuses to start without them:
-# PREFLIGHT_SECRET and PREFLIGHT_N8N_VERSION. INSTALL.md says what each one is,
-# how to get your beta key in, and how to update. The API image is pinned by
-# digest as well as version, so what you pull is exactly what was released.
+# Three values are required in .env and the stack refuses to start without
+# them: PREFLIGHT_SECRET, POSTGRES_PASSWORD and PREFLIGHT_N8N_VERSION.
+# INSTALL.md says what each one is, how to get your beta key in, and how to
+# update. The API image is pinned by digest as well as version, so what you
+# pull is exactly what was released.
 
 name: preflight-selfhost
 services:
@@ -14,10 +15,12 @@ services:
     image: postgres:16-alpine
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-preflight}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-preflight_local_dev}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in your .env — see INSTALL.md for how to generate one}
       POSTGRES_DB: ${POSTGRES_DB:-preflight}
     volumes:
     - postgres-data:/var/lib/postgresql/data
+    networks:
+    - database
     healthcheck:
       test:
       - CMD-SHELL
@@ -26,9 +29,10 @@ services:
       timeout: 5s
       retries: 10
   api:
-    image: ghcr.io/sleepvista/preflight-api:0.3.1@sha256:d83b8b6aab6fa281b98d53221868a05941cd97d39db0cd98b40ddc6f4f276caf
+    image: ghcr.io/sleepvista/preflight-api:0.3.2@sha256:a5d14455e9f75be7b16a3ecc31b809b5d6cbea46f95c13f87b0b235f0d373515
     environment:
-      DATABASE_URL: postgresql://${POSTGRES_USER:-preflight}:${POSTGRES_PASSWORD:-preflight_local_dev}@postgres:5432/${POSTGRES_DB:-preflight}
+      DATABASE_URL: postgresql://${POSTGRES_USER:-preflight}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in your .env — see INSTALL.md for how to generate one}@postgres:5432/${POSTGRES_DB:-preflight}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in your .env — see INSTALL.md for how to generate one}
       PREFLIGHT_SECRET: ${PREFLIGHT_SECRET:?set PREFLIGHT_SECRET in your .env — see INSTALL.md for how to generate one}
       SANDBOX_N8N_URL: http://n8n-sandbox:5678
       SANDBOX_N8N_URLS: '{"${PREFLIGHT_N8N_VERSION:?set PREFLIGHT_N8N_VERSION to your n8n version, e.g. 2.36.8}": "http://n8n-sandbox:5678"}'
@@ -49,6 +53,7 @@ services:
     networks:
     - default
     - sandbox
+    - database
     ports:
     - 127.0.0.1:8000:8000
     volumes:
@@ -119,6 +124,11 @@ services:
 networks:
   default: null
   sandbox:
+    internal: true
+    driver_opts:
+      com.docker.network.bridge.gateway_mode_ipv4: isolated
+    enable_ipv6: false
+  database:
     internal: true
     driver_opts:
       com.docker.network.bridge.gateway_mode_ipv4: isolated
