@@ -61,6 +61,40 @@ you took before updating.
    fetched already stays in their clone whatever you do — ship `X.Y.Z+1`
    instead.
 
+## 0.3.4 — 2026-10-27
+
+**Updating from 0.3.3: back up, pull, `up`.** The database is unchanged
+(schema revision `0014_published_nodes`), so there is nothing to wait for and
+nothing to re-run. Every change below is in how Preflight reads and reports,
+found by clicking every control in the UI and running 26 varied workflows
+through record, replay, gate and the upgrade check.
+
+**Database:** unchanged (schema revision `0014_published_nodes`).
+
+**Fixes from clicking every control and running 26 workflows.**
+- **The upgrade check no longer fails with a server error** on a workflow
+  that has two identical nodes side by side (two parallel HTTP calls with the
+  same settings). It also keeps the report if saving the history fails.
+- **An instance with no workflows is reported as "nothing was checked"**, not
+  as a clean bill of health.
+- **The workflow page replays and deploys your recorded run**, not a
+  hand-written test input that happened to be newer. "Redeploy" and the
+  rollback buttons say what they do, and ask before acting on the version
+  already live.
+- **A replay of a workflow that failed when recorded**, with nothing edited,
+  is reported as reproducing that failure instead of blaming you.
+- **Moving a node or editing a note is no longer an "edit"** when deciding
+  whether a difference is yours. Disabling a node or changing what it does on
+  error still is.
+- **Send-a-report removes more:** a value written after `password=`,
+  `token:` or `api_key`, and n8n API keys, as well as long tokens. A password
+  written in plain words is still not found, and the panel now says so.
+- A wrong n8n version typed at registration is refused with a message; a bad
+  address in the browser shows "not a Preflight page"; a rejected token says
+  so; noise rules with a malformed path are refused when saved.
+- A saved workflow with a leftover setting n8n ignores (a Set node that once
+  had a different mode) can be replayed again.
+
 ## 0.3.3 — 2026-10-27
 
 **Updating from 0.3.2: back up, pull, `up`, then two things happen.**

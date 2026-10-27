@@ -13,8 +13,20 @@ terminal, unless it says otherwise. Run them from this folder.
 
 ## What you need
 
-- **Docker Desktop**, running, with Docker Engine 28 or later (Docker Desktop
-  4.38+).
+- **Docker Desktop**, installed and running, with Docker Engine 28 or later
+  (Docker Desktop 4.38+). Preflight runs entirely inside Docker, so nothing
+  below works without it. Download it from
+  <https://www.docker.com/products/docker-desktop/>, install it, and open it
+  once so it finishes starting (on Windows it may ask you to restart). To
+  check, run this in PowerShell or a terminal; it should print a version
+  number of 28 or higher and no error:
+
+  ```
+  docker version --format "{{.Server.Version}}"
+  ```
+
+  If it says it cannot connect to the Docker daemon, Docker Desktop is not
+  running yet.
 - **Your n8n's exact version** — `2.44.6`, not `2.44`. In n8n it is under
   **Help → About**.
 - **An n8n API key** for the instance: in n8n, **Settings → n8n API → Create
