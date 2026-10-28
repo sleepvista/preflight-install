@@ -7,6 +7,7 @@ answered from the recording, and shows which node's output changed.
 This repository holds what you need to run the beta on your own machine:
 
 - `INSTALL.md` — start here.
+- `install.cmd` — on Windows, double-click it to check your computer, install Preflight and start it (INSTALL.md says how, and what it does).
 - `docker-compose.yml` — the stack, pinned to the release it was published with.
 - `.env.example` — the settings you fill in.
 - `RELEASES.md` — what each release changes for you; read it before updating.

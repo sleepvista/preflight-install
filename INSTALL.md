@@ -11,6 +11,52 @@ what it contains.
 Every command below works in **Windows PowerShell** and in a macOS or Linux
 terminal, unless it says otherwise. Run them from this folder.
 
+## The quick way on Windows
+
+If you are on Windows 10 or 11, the installer does steps 1 to 4 below for you
+and checks that your computer is ready first. Everything it does is described
+step by step in this guide, so you can read what it will do, or do it by hand.
+
+1. Download this folder: on GitHub choose **Code → Download ZIP**.
+2. **Before you extract it**, right-click the ZIP file, choose **Properties**,
+   tick **Unblock** at the bottom, and press **OK**. (Windows marks downloaded
+   files as untrusted and shows warnings for scripts. Unblocking the ZIP first
+   means the files inside are not marked. Unblocking after extracting does not
+   work for files already written.) If you have git you can instead run
+   `git clone https://github.com/sleepvista/preflight-install.git`, which
+   carries no mark.
+3. Extract the ZIP, open the folder, and double-click **install.cmd**. Do not
+   run it as administrator.
+4. Follow the questions. It will:
+   - check your Windows version, free disk space, and that Docker Desktop is
+     installed, running, and in Linux-container mode (if Docker Desktop is
+     missing it offers to install it, and tells you to restart and run it
+     again);
+   - ask for your n8n version, your time zone and your beta key, and write
+     `.env` with two long random secrets;
+   - download and start Preflight, wait until it says it is ready, put your
+     operator token on the clipboard and open the page.
+5. Paste the token into the page, then go to step 5 below to register your n8n.
+
+You can run **install.cmd** again at any time. To update to a new release,
+download the new folder, copy your `.env` into it, and run **install.cmd**: it
+asks first, then backs up your data into a `backups` folder before it changes
+anything. It never deletes your data and never replaces a secret that is in
+use. If it finds data from an earlier install but no `.env`, it stops and tells
+you, because new secrets would lock you out of that data.
+
+**If Windows warns you.** The installer is an ordinary text script, not a signed
+program, so Windows or your antivirus may say it is from an unknown publisher.
+That is expected for a beta. Open **install.cmd** and **install.ps1** in
+Notepad if you want to read them first. `install.cmd` starts PowerShell with
+`-ExecutionPolicy Bypass`, which applies to that one run only and changes no
+setting on your computer. It does not remove Windows warnings; the Unblock step
+above is what prevents them. If something goes wrong, `install-log.txt` in this
+folder records what the installer did (it never contains your secrets).
+
+The numbered steps below are the same thing by hand, and they stay the
+reference.
+
 ## What you need
 
 - **Docker Desktop**, installed and running, with Docker Engine 28 or later

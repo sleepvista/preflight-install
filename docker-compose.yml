@@ -1,4 +1,4 @@
-# Preflight, pointed at the n8n you already run. Generated for release 0.3.4
+# Preflight, pointed at the n8n you already run. Generated for release 0.3.5
 # from the file the Preflight repository tests; do not edit it by hand.
 #
 #   docker compose up -d
@@ -29,7 +29,7 @@ services:
       timeout: 5s
       retries: 10
   api:
-    image: ghcr.io/sleepvista/preflight-api:0.3.4@sha256:dda6491a75aa529feced13f9b91b0a7f03465110935d43e3a203a7936d07e1cb
+    image: ghcr.io/sleepvista/preflight-api:0.3.5@sha256:31c66a6bb65ef03bd24ae34c685b0dc5b8a80fc69c08f92bf9d4037bfef1f9af
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-preflight}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in your .env — see INSTALL.md for how to generate one}@postgres:5432/${POSTGRES_DB:-preflight}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in your .env — see INSTALL.md for how to generate one}

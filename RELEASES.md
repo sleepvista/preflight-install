@@ -61,6 +61,40 @@ you took before updating.
    fetched already stays in their clone whatever you do — ship `X.Y.Z+1`
    instead.
 
+## 0.3.5 — 2026-10-28
+
+**Updating from 0.3.4: back up, pull, `up`.** The database is unchanged
+(schema revision `0014_published_nodes`), so there is nothing to wait for and
+nothing to re-run. On Windows you can now run the new installer instead (below).
+
+**Database:** unchanged (schema revision `0014_published_nodes`).
+
+**Four false greens fixed (found by running real forum workflows).**
+- Editing a **trigger** (webhook path or method, schedule) is no longer
+  "Cleared for deploy": a replay feeds the recorded data in the trigger's place,
+  so the edit was never exercised. It now needs review.
+- A **newly added Email or other sending node** needs review. It used to pass
+  because it was switched off in the replay.
+- A change to the workflow's **own settings** (timezone, error workflow,
+  execution order) needs review.
+- **Lint warns about a secret typed into a node** (a key in a query string or
+  header parameter). Put it in an n8n credential. The warning names the
+  parameter and never shows the value.
+
+**A Windows installer.** On Windows, double-click `install.cmd` in the install
+folder: it checks that Docker Desktop and the rest are ready, offers to install
+Docker Desktop, asks three questions, writes your `.env`, starts Preflight and
+puts your sign-in token on the clipboard. Run it again to update; it backs up
+your data first and never changes a secret in use. It is an unsigned script, so
+Windows may warn: right-click the downloaded ZIP, Properties, Unblock, and only
+then extract it (INSTALL.md says why). The manual steps still work and are
+unchanged. This has not yet been run on a real Windows machine; if something
+goes wrong, `install-log.txt` in the folder says what it did, and the Report
+button works once Preflight is up.
+
+Known and not changed here: workflows that make one call per item, and workflows
+that keep state between runs ("only new items"), do not replay cleanly yet.
+
 ## 0.3.4 — 2026-10-27
 
 **Updating from 0.3.3: back up, pull, `up`.** The database is unchanged
