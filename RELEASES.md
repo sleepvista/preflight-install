@@ -61,6 +61,60 @@ you took before updating.
    fetched already stays in their clone whatever you do — ship `X.Y.Z+1`
    instead.
 
+## 0.3.6 — 2026-10-28
+
+**Database:** changes; head revision `0015_recorded_execution` (one new column
+and one index on `fixtures`). The API applies it at start. Back up first:
+docs/INSTALL.md, "Updating, in this order", step 1. Existing fixtures are not
+rewritten.
+
+**Promoting the same run twice is refused.** Promoting an execution that is
+already a live fixture of the workflow answers 409 and names the existing
+fixture, instead of making a second identical one that counted the same
+behaviour twice. Fixtures made before this release are not checked against it
+(nothing records which client run they came from); only new promotions are.
+
+**Tidier edges.** A workflow n8n would refuse (duplicate node names, a
+connection to nothing, a missing trigger, an empty workflow) now says exactly
+what is wrong instead of a generic sandbox error. A node you only renamed is
+recognised as the same node, so a rename no longer reads as a break (a rename
+plus another edit still does). Lint warns about a call to a workflow Preflight
+has not seen. Canvas notes are no longer listed as untestable. The public
+health page no longer shows instance numbers.
+
+**A replay no longer says "pass" where it cannot tell.** A parent that calls
+another workflow now reads *review* when the called workflow changed after the
+recording (or Preflight cannot tell), and the deploy gate checks it again before
+opening. A workflow that remembers what it has processed (static data, Remove
+Duplicates "only new items"), a recording taken with pinned sample data, and a
+Wait longer than about 20 seconds are each answered from the recording and
+reported as untestable at that node; everything after them is still compared. A
+five-minute Wait used to fail the replay with an error and no longer does.
+Retry and on-error settings on an API node count as changes to it. Recordings
+made before this release have no record of what their called workflows were, so
+their Execute Workflow calls read *review* until you record them again. A failed
+recording's summary now says where it failed.
+
+**Workflows that call an API once per item now replay.** An HTTP Request node
+given a list makes one request per item (ten orders, ten calls). Before, Preflight
+answered the first call with all ten results and refused the other nine, so such
+a workflow could never replay clean and its result changed from run to run. Each
+call is now answered with its own item's recorded result, in any order. An
+unedited replay of this shape is green every time; an edit to a later node is
+red at that node. Recordings made before 0.3.0's per-branch capture cannot be
+split and behave as before (re-record to test them).
+
+Two kinds of node cannot be answered one request at a time: a node that sends
+failures to an error output, and a node using the HTTP node's paging option.
+They, and everything they feed, are now reported **untestable** with that
+reason (they used to read red, or "replay failed"). A loop (Loop Over Items)
+replays with the right answers and reads review, as before, because a node that
+ran more than once is only partly compared.
+
+Where an input produced no result, the replay answers that call with an empty
+list. The replay report counts these ("inferred") so a green that rests on one
+is visible.
+
 ## 0.3.5 — 2026-10-28
 
 **Updating from 0.3.4: back up, pull, `up`.** The database is unchanged
