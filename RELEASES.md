@@ -61,6 +61,32 @@ you took before updating.
    fetched already stays in their clone whatever you do — ship `X.Y.Z+1`
    instead.
 
+## 0.3.8 — 2026-10-31
+
+**Database:** unchanged (schema revision `0015_recorded_execution`).
+
+**More than one n8n version.** Preflight can now run up to four replay
+sandboxes, one n8n version each: one per version your clients run, and one
+for a version you want to test an upgrade to before installing it (n8n 3.0.0,
+for example). Each instance replays on the sandbox matching its version, and
+the upgrade check compares against the instance's own sandbox. On Windows, run
+**install.cmd** again and answer **y** to "Change them?"; by hand, see
+INSTALL.md, "More than one n8n version". An install that keeps its one
+version needs no change: updating with your current `.env` leaves the sandbox
+exactly as it is.
+
+**Changing a version now resets that sandbox's scratch database.** n8n starts
+on a database another version changed without saying so, and a replay there
+cannot be trusted. The installer asks once, names what it deletes (only the
+sandbox's own scratch database, never your recordings, history or settings),
+and changes `.env` only after that. If you change a version by hand, INSTALL.md
+gives the two commands to run first.
+
+**Also in this release:** the instances page says when no sandbox runs an
+instance's version, and what to add; the upgrade check names each target's
+sandbox and no longer offers the version the instance already runs; the
+startup isolation check covers every sandbox.
+
 ## 0.3.7 — 2026-10-29
 
 **Database:** unchanged (schema revision `0015_recorded_execution`).

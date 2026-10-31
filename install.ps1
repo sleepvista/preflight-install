@@ -285,7 +285,9 @@ function Update-EnvLine {
     # File.Replace, so nothing else in the file changes.
     param([string]$Path, [string]$Key, [string]$Value)
     $text = [System.IO.File]::ReadAllText($Path)
-    $pattern = '(?m)^\s*' + [regex]::Escape($Key) + '\s*=.*$'
+    # [ \t] and [^\r\n], not \s and .: \s crosses line breaks (eating a blank
+    # line above the key) and . keeps the \r of a CRLF line.
+    $pattern = '(?m)^[ \t]*' + [regex]::Escape($Key) + '[ \t]*=[^\r\n]*'
     $replacement = ("$Key=$Value").Replace('$', '$$')
     if ($text -match $pattern) { $new = [regex]::Replace($text, $pattern, $replacement) }
     else { $new = $text.TrimEnd() + "`r`n$Key=$Value`r`n" }
@@ -663,6 +665,298 @@ function Get-PreflightVolumes {
     return @($result.Output | Where-Object { $_ -like "$($script:ProjectPrefix)*" })
 }
 
+# The replay sandbox's own volume: n8n's scratch SQLite database, holding
+# nothing a person made (replay workflows are deleted after each replay, and the
+# sandbox's owner credential lives in preflight-state). It is removed when the
+# sandbox's n8n version changes, because n8n starts on a database another
+# version migrated without a word (measured: 2.33.7 ran on a database 2.35.7
+# had migrated), and a replay there is a verdict from a sandbox in an untested
+# state.
+#
+# Removal is by exact name only, never through the name filter
+# Get-PreflightVolumes uses: that filter also matches postgres-data and
+# preflight-state, which hold everything the person has.
+# \z, not $: $ also matches before a trailing newline.
+$script:SandboxVolumePattern = '^preflight-selfhost_n8n-sandbox(-[2-4])?-data\z'
+
+function Get-SandboxVolumeName {
+    param([int]$Slot = 1)
+    if ($Slot -eq 1) { return "$($script:ProjectPrefix)n8n-sandbox-data" }
+    if ($Slot -ge 2 -and $Slot -le 4) { return "$($script:ProjectPrefix)n8n-sandbox-$Slot-data" }
+    throw "There is no sandbox slot $Slot."
+}
+
+function Get-SandboxServiceName {
+    param([int]$Slot = 1)
+    if ($Slot -eq 1) { return 'n8n-sandbox' }
+    if ($Slot -ge 2 -and $Slot -le 4) { return "n8n-sandbox-$Slot" }
+    throw "There is no sandbox slot $Slot."
+}
+
+function Test-SandboxVolumeName {
+    # The last check before a volume is removed: $true only for a sandbox's
+    # own volume, spelled exactly.
+    param([string]$Name)
+    return [bool]($Name -cmatch $script:SandboxVolumePattern)
+}
+
+function Remove-SandboxVolume {
+    # Stop and remove the slot's container, then its volume. Docker refuses to
+    # remove a volume a container still holds, so the order matters. A volume
+    # that is not there is not an error: nothing to reset. Returns $true when
+    # the slot will start fresh.
+    param([int]$Slot = 1)
+    $volume = Get-SandboxVolumeName -Slot $Slot
+    if (-not (Test-SandboxVolumeName $volume)) { Stop-Install "Refusing to remove ${volume}: it is not a sandbox volume." }
+    $docker = Find-Docker
+    if (-not $docker) { Stop-Install 'Docker was not found.' }
+    $exists = Invoke-Native -File $docker -Arguments @('volume', 'inspect', $volume)
+    if ($exists.ExitCode -ne 0) { Write-InstallLog "sandbox volume $volume not present; nothing to reset"; return $true }
+    $service = Get-SandboxServiceName -Slot $Slot
+    $rm = Invoke-Compose -Arguments @('rm', '-s', '-f', $service)
+    if ($rm.ExitCode -ne 0) { Stop-Install "Could not stop the sandbox ($service) to reset it. Nothing was deleted. Check that Docker Desktop is running, then run this again." }
+    $gone = Invoke-Native -File $docker -Arguments @('volume', 'rm', $volume)
+    if ($gone.ExitCode -ne 0) { Stop-Install "Could not remove the sandbox's scratch database ($volume). Your .env was not changed. Run this again; if it keeps failing, run  docker volume rm $volume  yourself first." }
+    Write-Ok "Reset the sandbox's scratch database ($volume)."
+    return $true
+}
+
+# ---------------------------------------------------------------------------
+# Sandbox slots (pure, unit-tested)
+# ---------------------------------------------------------------------------
+# Up to four sandboxes, one n8n version each. Slot 1 is PREFLIGHT_N8N_VERSION
+# and always on; slots 2 to 4 are PREFLIGHT_N8N_VERSION_2 to _4, each turned on
+# by its profile (sandbox-2 to -4) in COMPOSE_PROFILES.
+
+$script:SlotKeys = @('PREFLIGHT_N8N_VERSION', 'PREFLIGHT_N8N_VERSION_2', 'PREFLIGHT_N8N_VERSION_3', 'PREFLIGHT_N8N_VERSION_4')
+$script:MaxSlots = 4
+
+function Get-SandboxSlots {
+    # The four slot versions from .env values, '' for an empty slot.
+    param([hashtable]$EnvValues)
+    $slots = @('', '', '', '')
+    for ($i = 0; $i -lt $script:MaxSlots; $i++) {
+        $key = $script:SlotKeys[$i]
+        if ($EnvValues -and $EnvValues.ContainsKey($key) -and $EnvValues[$key]) { $slots[$i] = [string]$EnvValues[$key] }
+    }
+    return , $slots
+}
+
+function ConvertTo-VersionList {
+    # "2.44.6, 2.40.3,2.44.6" -> 2.44.6, 2.40.3: trimmed, empty parts dropped,
+    # duplicates dropped, first-seen order kept.
+    param([string]$Text)
+    $out = New-Object System.Collections.ArrayList
+    if (-not $Text) { return , @() }
+    foreach ($part in ($Text -split ',')) {
+        $value = $part.Trim()
+        if ($value -and -not $out.Contains($value)) { [void]$out.Add($value) }
+    }
+    return , @($out.ToArray())
+}
+
+function Resolve-SandboxSlots {
+    # Assign versions to slots by identity, never by typing order: a version
+    # already in a slot stays there, a new one takes the lowest empty slot, and
+    # slot 1 changes only when its version leaves the list. Typing the same
+    # versions in another order changes nothing, so nothing is reset.
+    # Returns the four slot versions; throws (Stop-Install) on more than four.
+    param([string[]]$Current, [string[]]$Wanted)
+    if (-not $Wanted -or $Wanted.Count -eq 0) { Stop-Install 'At least one n8n version is needed: the one your instances run.' }
+    if ($Wanted.Count -gt $script:MaxSlots) { Stop-Install "Preflight runs at most $($script:MaxSlots) sandboxes. Pick the $($script:MaxSlots) versions you need most." }
+    $next = @('', '', '', '')
+    for ($i = 0; $i -lt $script:MaxSlots; $i++) {
+        if ($Current[$i] -and ($Wanted -contains $Current[$i])) { $next[$i] = $Current[$i] }
+    }
+    foreach ($version in $Wanted) {
+        if ($next -contains $version) { continue }
+        for ($i = 0; $i -lt $script:MaxSlots; $i++) {
+            if (-not $next[$i]) { $next[$i] = $version; break }
+        }
+    }
+    if (-not $next[0]) {
+        # Slot 1 is required. Its version left the list and no new version took
+        # its place, so the lowest remaining slot moves into it.
+        for ($i = 1; $i -lt $script:MaxSlots; $i++) {
+            if ($next[$i]) { $next[0] = $next[$i]; $next[$i] = ''; break }
+        }
+    }
+    return , $next
+}
+
+function Get-ComposeProfiles {
+    # COMPOSE_PROFILES for the occupied optional slots, e.g. sandbox-2,sandbox-4.
+    param([string[]]$Slots)
+    $profiles = @()
+    for ($i = 1; $i -lt $script:MaxSlots; $i++) {
+        if ($Slots[$i]) { $profiles += "sandbox-$($i + 1)" }
+    }
+    return ($profiles -join ',')
+}
+
+function Get-ChangedSlots {
+    # Slot numbers (1-4) whose version changed, were switched off, or were
+    # newly filled: any of them may hold a scratch database another version
+    # made (a slot emptied by hand keeps its volume), so each must go before
+    # it starts again. The caller keeps only the slots that have a volume.
+    param([string[]]$Old, [string[]]$New)
+    $changed = @()
+    for ($i = 0; $i -lt $script:MaxSlots; $i++) {
+        if ([string]$Old[$i] -ne [string]$New[$i]) { $changed += ($i + 1) }
+    }
+    return , $changed
+}
+
+function Get-RunningSlots {
+    # The slots Compose will actually start: slot 1, and each other slot with
+    # a version AND its profile in COMPOSE_PROFILES (or COMPOSE_PROFILES=*).
+    # What the installer waits for, so a hand edit that set a version without
+    # its profile is reported rather than waited on for five minutes.
+    param([string[]]$Slots, [string]$Profiles)
+    $on = @('', '', '', '')
+    $enabled = @(([string]$Profiles -split ',') | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+    for ($i = 0; $i -lt $script:MaxSlots; $i++) {
+        if (-not $Slots[$i]) { continue }
+        if ($i -eq 0 -or $enabled -contains '*' -or $enabled -contains "sandbox-$($i + 1)") { $on[$i] = $Slots[$i] }
+    }
+    return , $on
+}
+
+function Get-SandboxMemoryGB {
+    # The worst case, in GB: at most two sandboxes run a workflow at once
+    # (Preflight allows two executions across all sandboxes), each up to its
+    # 1 GB limit; the rest idle, measured at about 0.45 GB; Preflight itself
+    # about 0.5 GB.
+    param([int]$Count)
+    $busy = [Math]::Min($Count, 2)
+    $idle = [Math]::Max($Count - 2, 0)
+    return [Math]::Round($busy * 1.0 + $idle * 0.45 + 0.5, 1)
+}
+
+function Format-SandboxSlots {
+    param([string[]]$Slots, [string]$Target)
+    $lines = @()
+    for ($i = 0; $i -lt $script:MaxSlots; $i++) {
+        if (-not $Slots[$i]) { continue }
+        $note = if ($Target -and $Slots[$i] -eq $Target) { '   (upgrade target)' } else { '' }
+        $lines += ("  slot {0}  {1}{2}" -f ($i + 1), $Slots[$i], $note)
+    }
+    return $lines
+}
+
+function Confirm-SandboxReset {
+    # Asked once, naming every volume, before anything is deleted. Returns
+    # $true with nothing asked when none of the slots has a volume yet.
+    param([int[]]$Slots, [string[]]$Volumes, [string[]]$Old, [string[]]$New)
+    $doomed = @()
+    foreach ($slot in $Slots) {
+        $volume = Get-SandboxVolumeName -Slot $slot
+        if ($Volumes -contains $volume) { $doomed += $slot }
+    }
+    if ($doomed.Count -eq 0) { return $true }
+    foreach ($slot in $doomed) {
+        $was = [string]$Old[$slot - 1]
+        $now = [string]$New[$slot - 1]
+        $what = if (-not $was) { "is being set to n8n $now" } elseif (-not $now) { "(n8n $was) is being switched off" } else { "changes from n8n $was to $now" }
+        Write-Note "Sandbox slot $slot $what, so its scratch database ($(Get-SandboxVolumeName -Slot $slot)) is deleted."
+    }
+    Write-Note 'A sandbox scratch database holds nothing you made: no recordings, no workflow history, no settings. Those are kept.'
+    Write-Note 'n8n would otherwise start on a database another version had changed, and say nothing.'
+    return (Confirm-Yes 'Delete and go ahead?')
+}
+
+function Read-SandboxVersions {
+    # The two questions. Returns the wanted versions, slot-1 candidate first,
+    # and the upgrade target (or '').
+    param([string[]]$Current)
+    $currentRun = @()
+    foreach ($v in $Current) { if ($v) { $currentRun += $v } }
+    while ($true) {
+        $hint = if ($currentRun.Count) { " Now: $($currentRun -join ', ')." } else { '' }
+        # In quotes: Read-Host returns $null when there is no console input.
+        $answer = "$(Read-Host "Which n8n versions do your instances run? One or more, separated by commas, for example 2.44.6, 2.40.3 (n8n: Help > About).$hint")"
+        if (-not $answer.Trim() -and $currentRun.Count) { $run = $currentRun } else { $run = ConvertTo-VersionList $answer }
+        if ($run.Count -eq 0) { Write-Warn 'At least one version is needed.'; continue }
+        $bad = @($run | Where-Object { -not (Test-N8nVersionShape $_) })
+        if ($bad.Count) { Write-Warn "$($bad -join ', ') is not three numbers like 2.44.6. Please try again."; continue }
+        if (-not (Confirm-N8nVersionsExist $run)) { continue }
+        break
+    }
+    while ($true) {
+        $target = ("$(Read-Host 'Do you want to test an upgrade to a newer n8n before you install it? Enter that version, for example 3.0.0, or press Enter to skip')").Trim()
+        if (-not $target) { break }
+        if (-not (Test-N8nVersionShape $target)) { Write-Warn 'That is not three numbers like 3.0.0. Please try again.'; continue }
+        if (-not (Confirm-N8nVersionsExist @($target))) { continue }
+        break
+    }
+    $wanted = @($run)
+    if ($target -and -not ($wanted -contains $target)) { $wanted += $target }
+    if ($wanted.Count -gt $script:MaxSlots) {
+        Write-Warn "Preflight runs at most $($script:MaxSlots) sandboxes, and that is $($wanted.Count). Pick the $($script:MaxSlots) you need most."
+        return (Read-SandboxVersions -Current $Current)
+    }
+    return [pscustomobject]@{ Wanted = $wanted; Target = $target }
+}
+
+function Confirm-N8nVersionsExist {
+    param([string[]]$Versions)
+    foreach ($v in $Versions) {
+        $exists = Test-N8nVersionExists -Version $v
+        if ($exists -eq $false) { Write-Warn "n8n has no release $v. Check Help > About in n8n and try again."; return $false }
+        if ($null -eq $exists) { Write-Warn "Could not confirm $v with the registry; continuing. The download will say if it does not exist." }
+    }
+    return $true
+}
+
+function Show-SandboxPlan {
+    # What will run, what it costs, and a warning (not a refusal) when the
+    # worst case is more memory than Docker has.
+    param([string[]]$Slots, [string]$Target)
+    $count = @($Slots | Where-Object { $_ }).Count
+    Write-Note "Preflight will run $count sandbox$(if ($count -ne 1) { 'es' }):"
+    foreach ($line in (Format-SandboxSlots -Slots $Slots -Target $Target)) { Write-Note $line }
+    Write-Note 'Each n8n version is about 2 GB to download the first time.'
+    $need = Get-SandboxMemoryGB -Count $count
+    $haveGB = Get-DockerMemoryGB
+    if ($haveGB -and $need -gt $haveGB) {
+        Write-Warn "Docker has $haveGB GB of memory and these could need about $need GB at the busiest. Replays may be slow or fail; Docker Desktop's Settings > Resources can give it more."
+        if (-not (Confirm-Yes 'Continue anyway?')) { Stop-Install 'Nothing was changed.' }
+    }
+    elseif ($haveGB) { Write-Note "Docker has $haveGB GB of memory; these need about $need GB at the busiest." }
+}
+
+function Get-DockerMemoryGB {
+    $docker = Find-Docker
+    if (-not $docker) { return $null }
+    $result = Invoke-Native -File $docker -Arguments @('info', '--format', '{{.MemTotal}}')
+    $bytes = 0L
+    if ($result.ExitCode -ne 0 -or -not [long]::TryParse((($result.Output -join '').Trim()), [ref]$bytes) -or $bytes -le 0) { return $null }
+    return [Math]::Round($bytes / 1GB, 1)
+}
+
+function Wait-SandboxesHealthy {
+    # The API's health does not wait for slots 2 to 4, so the installer does:
+    # it does not say "ready" while a sandbox is still starting. Up to 5 minutes.
+    param([string[]]$Slots, [int]$Seconds = 300)
+    $services = @()
+    for ($i = 0; $i -lt $script:MaxSlots; $i++) { if ($Slots[$i]) { $services += (Get-SandboxServiceName -Slot ($i + 1)) } }
+    $deadline = (Get-Date).AddSeconds($Seconds)
+    while ($true) {
+        $result = Invoke-Compose -Arguments @('ps', '--format', '{{.Service}} {{.Health}}')
+        $healthy = @()
+        if ($result.ExitCode -eq 0) {
+            foreach ($line in $result.Output) {
+                $parts = ([string]$line).Trim() -split '\s+'
+                if ($parts.Count -ge 2 -and $parts[1] -eq 'healthy') { $healthy += $parts[0] }
+            }
+        }
+        $waiting = @($services | Where-Object { $healthy -notcontains $_ })
+        if ($waiting.Count -eq 0) { return $true }
+        if ((Get-Date) -gt $deadline) { Write-Warn "Still starting after $Seconds seconds: $($waiting -join ', '). Check  docker compose logs $($waiting[0])"; return $false }
+        Start-Sleep -Seconds 3
+    }
+}
+
 function Test-N8nVersionExists {
     # $true = exists, $false = the registry says no, $null = could not ask.
     param([string]$Version)
@@ -808,7 +1102,7 @@ function Read-BetaKey {
 function Invoke-Install {
     Write-InstallLog "install.ps1 started in $($script:Root)"
     Write-Host 'Preflight installer'
-    Write-Host 'Safe to run again at any point. It never deletes your data or changes a secret in use.'
+    Write-Host 'Safe to run again at any point. It never deletes your recordings, workflow history or settings, and never changes a secret in use.'
 
     Write-Step 'Checking this computer'
     $checks = Invoke-Checks
@@ -844,7 +1138,7 @@ function Invoke-Install {
     switch ($state) {
         'OrphanedData' {
             Stop-Install ("Found Preflight data from an earlier install on this computer, but no complete .env. New secrets would lock you out of that data. " +
-                "Restore your old .env from a backup and run this again. To start over and DELETE that data, run 'docker compose down -v' yourself; this installer never deletes data.")
+                "Restore your old .env from a backup and run this again. To start over and DELETE that data, run 'docker compose down -v' yourself; this installer never deletes your data.")
         }
         'PartlyFilledWithData' {
             Stop-Install ("Your .env is missing a secret and Preflight data already exists. A secret cannot be refilled safely against existing data. " +
@@ -853,6 +1147,13 @@ function Invoke-Install {
     }
 
     $values = @{}
+    # A version change is applied after every question is answered and the
+    # backup is taken: the sandbox volume is reset first, then .env names the
+    # new version. Declining anything on the way leaves both as they were.
+    $oldSlots = Get-SandboxSlots -EnvValues $existing
+    $newSlots = $oldSlots
+    $resetSlots = @()
+    $writeSlots = $false
     if ($state -eq 'Fresh' -or $state -eq 'PartlyFilled') {
         Write-Step 'A few questions'
         foreach ($key in 'PREFLIGHT_SECRET', 'POSTGRES_PASSWORD') {
@@ -862,7 +1163,14 @@ function Invoke-Install {
                 $values[$key] = $value
             }
         }
-        if (-not ($existing.ContainsKey('PREFLIGHT_N8N_VERSION') -and $existing['PREFLIGHT_N8N_VERSION'])) { $values['PREFLIGHT_N8N_VERSION'] = Read-N8nVersion }
+        if (-not ($existing.ContainsKey('PREFLIGHT_N8N_VERSION') -and $existing['PREFLIGHT_N8N_VERSION'])) {
+            $plan = Read-SandboxVersions -Current $oldSlots
+            $newSlots = Resolve-SandboxSlots -Current $oldSlots -Wanted $plan.Wanted
+            Show-SandboxPlan -Slots $newSlots -Target $plan.Target
+            for ($i = 0; $i -lt $script:MaxSlots; $i++) { $values[$script:SlotKeys[$i]] = $newSlots[$i] }
+            $values['COMPOSE_PROFILES'] = Get-ComposeProfiles -Slots $newSlots
+            $writeSlots = $false
+        }
         # Ask for the zone unless the .env already holds one other than the
         # example's default, and for the key unless it already holds one.
         $zone = ''
@@ -887,17 +1195,31 @@ function Invoke-Install {
     elseif ($state -eq 'NeedsVersion') {
         Write-Step 'One missing value'
         $version = Read-N8nVersion
-        Update-EnvLine -Path $envPath -Key 'PREFLIGHT_N8N_VERSION' -Value $version
-        Write-Ok 'n8n version saved.'
+        $newSlots = @($version, $oldSlots[1], $oldSlots[2], $oldSlots[3])
+        # The version that made an existing slot 1 volume is unknown here, so
+        # it cannot be assumed to match: treat it as a change.
+        $resetSlots = @(@(1) | Where-Object { $volumes -contains (Get-SandboxVolumeName -Slot $_) })
+        if (-not (Confirm-SandboxReset -Slots $resetSlots -Volumes $volumes -Old @('unknown', '', '', '') -New $newSlots)) { Stop-Install 'Nothing was changed.' }
+        $writeSlots = $true
     }
     elseif ($state -eq 'Update') {
         Write-Step 'An existing install'
         Write-Ok 'Found your .env; keeping it as it is.'
         Register-Secret $existing['PREFLIGHT_SECRET']
         Register-Secret $existing['POSTGRES_PASSWORD']
-        $current = $existing['PREFLIGHT_N8N_VERSION']
-        if (Confirm-Yes "Your n8n version is set to $current. Change it?") {
-            Update-EnvLine -Path $envPath -Key 'PREFLIGHT_N8N_VERSION' -Value (Read-N8nVersion)
+        Write-Note 'Your sandboxes:'
+        foreach ($line in (Format-SandboxSlots -Slots $oldSlots -Target '')) { Write-Note $line }
+        if (Confirm-Yes 'Change them (add, remove or change a version)?') {
+            $plan = Read-SandboxVersions -Current $oldSlots
+            $newSlots = Resolve-SandboxSlots -Current $oldSlots -Wanted $plan.Wanted
+            Show-SandboxPlan -Slots $newSlots -Target $plan.Target
+            # Only slots that have a scratch database to lose.
+            # Assigned first: the function returns its array as one object, so
+            # piping it straight on would hand the filter the whole array.
+            $changedSlots = Get-ChangedSlots -Old $oldSlots -New $newSlots
+            $resetSlots = @($changedSlots | Where-Object { $volumes -contains (Get-SandboxVolumeName -Slot $_) })
+            if (-not (Confirm-SandboxReset -Slots $resetSlots -Volumes $volumes -Old $oldSlots -New $newSlots)) { Stop-Install 'Nothing was changed.' }
+            $writeSlots = $true
         }
         $releases = Join-Path $script:Root 'RELEASES.md'
         if (Test-Path -LiteralPath $releases) {
@@ -913,6 +1235,18 @@ function Invoke-Install {
         }
     }
 
+    if ($resetSlots.Count -gt 0) {
+        Write-Step 'Resetting sandboxes whose n8n version changed'
+        foreach ($slot in $resetSlots) { [void](Remove-SandboxVolume -Slot $slot) }
+    }
+    if ($writeSlots) {
+        # Every slot written, so a slot left empty is blanked rather than left
+        # holding a version the API would expect to be running.
+        for ($i = 0; $i -lt $script:MaxSlots; $i++) { Update-EnvLine -Path $envPath -Key $script:SlotKeys[$i] -Value $newSlots[$i] }
+        Update-EnvLine -Path $envPath -Key 'COMPOSE_PROFILES' -Value (Get-ComposeProfiles -Slots $newSlots)
+        Write-Ok ('Sandboxes set: ' + (@($newSlots | Where-Object { $_ }) -join ', ') + '.')
+    }
+
     Write-Step 'Downloading and starting Preflight (the first time takes a few minutes)'
     $pull = Invoke-Compose -Arguments @('pull') -Live
     if ($pull.ExitCode -ne 0) { Stop-Install "Downloading failed (exit code $($pull.ExitCode)). Check your internet connection and that Docker Desktop is running, then run this again." }
@@ -921,6 +1255,14 @@ function Invoke-Install {
 
     Write-Step 'Waiting for Preflight to be ready'
     if (-not (Wait-Ready)) { Stop-Install 'Preflight did not become ready.' }
+    # What Compose will start, from what .env now says.
+    $finalEnv = Read-EnvText ([System.IO.File]::ReadAllText($envPath))
+    $running = Get-RunningSlots -Slots (Get-SandboxSlots -EnvValues $finalEnv) -Profiles ([string]$finalEnv['COMPOSE_PROFILES'])
+    for ($i = 1; $i -lt $script:MaxSlots; $i++) {
+        $set = [string]$finalEnv[$script:SlotKeys[$i]]
+        if ($set -and -not $running[$i]) { Write-Warn "Sandbox slot $($i + 1) is set to n8n $set but is not turned on (its profile, sandbox-$($i + 1), is not in COMPOSE_PROFILES). Run this again and choose to change your sandboxes to fix it." }
+    }
+    if (-not (Wait-SandboxesHealthy -Slots $running)) { Stop-Install 'A sandbox did not become ready. The line above names it; run this again once it is fixed.' }
     Write-Ok 'Preflight is ready.'
 
     Write-Step 'Signing in'

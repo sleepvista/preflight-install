@@ -32,7 +32,8 @@ step by step in this guide, so you can read what it will do, or do it by hand.
      installed, running, and in Linux-container mode (if Docker Desktop is
      missing it offers to install it, and tells you to restart and run it
      again);
-   - ask for your n8n version, your time zone and your beta key, and write
+   - ask which n8n versions your instances run, whether you want to test an
+     upgrade to a newer one, your time zone and your beta key, and write
      `.env` with two long random secrets;
    - download and start Preflight, wait until it says it is ready, put your
      operator token on the clipboard and open the page.
@@ -41,9 +42,16 @@ step by step in this guide, so you can read what it will do, or do it by hand.
 You can run **install.cmd** again at any time. To update to a new release,
 download the new folder, copy your `.env` into it, and run **install.cmd**: it
 asks first, then backs up your data into a `backups` folder before it changes
-anything. It never deletes your data and never replaces a secret that is in
-use. If it finds data from an earlier install but no `.env`, it stops and tells
-you, because new secrets would lock you out of that data.
+anything. It never deletes your recordings, workflow history or settings, and
+never replaces a secret that is in use. If it finds data from an earlier install
+but no `.env`, it stops and tells you, because new secrets would lock you out of
+that data.
+
+The one thing it does delete, and only after asking: when you change your n8n
+version, it deletes the replay sandbox's own scratch database
+(`preflight-selfhost_n8n-sandbox-data`). That holds nothing you made. n8n would
+otherwise start on a database a different version had changed, and say
+nothing, and a replay there could not be trusted.
 
 **If Windows warns you.** The installer is an ordinary text script, not a signed
 program, so Windows or your antivirus may say it is from an unknown publisher.
@@ -129,6 +137,10 @@ Fill in:
   its own copy of n8n at this version, and refuses to replay if your instance
   runs a different one, because a green result on another version is not
   evidence about yours.
+- **`PREFLIGHT_N8N_VERSION_2` to `_4` and `COMPOSE_PROFILES`** — optional:
+  more sandboxes, for clients on other n8n versions or a version you want to
+  test an upgrade to. See
+  [More than one n8n version](#more-than-one-n8n-version).
 - **`PREFLIGHT_TIMEZONE`** — the timezone your n8n uses, e.g.
   `America/Edmonton`. If they differ, anything that formats a date looks
   changed on replay.
@@ -245,6 +257,57 @@ docker compose cp ./preflight-backup.sql postgres:/tmp/preflight-backup.sql
 docker compose exec -T postgres psql -U preflight -q -f /tmp/preflight-backup.sql preflight
 ```
 
+## More than one n8n version
+
+Preflight replays each instance on a sandbox running that instance's exact
+n8n version. If your clients run different versions, or you want to check
+whether a newer n8n would break their workflows before upgrading, Preflight
+can run up to four sandboxes, one version each.
+
+**On Windows, run install.cmd again** and answer **y** to "Change them?". It
+asks which versions your instances run and, separately, for a version to test
+an upgrade to (for example `3.0.0`). Typing the same versions in another
+order changes nothing. Each version is about 2 GB to download the first time.
+
+Then, on the instances page, check that every instance's declared version is
+the one it really runs: Preflight picks each instance's sandbox from it. An
+instance whose version has no sandbox is refused, with a message saying which
+version to add. The upgrade check offers every sandbox newer than the
+instance.
+
+**By hand (macOS, Linux, or Windows without the installer).** Slot 1 is
+`PREFLIGHT_N8N_VERSION`. Slots 2 to 4 each need two things in `.env`: the
+version, and the slot's profile in `COMPOSE_PROFILES`. For example, for a
+second client on 2.40.3 and an upgrade target of 3.0.0:
+
+```
+PREFLIGHT_N8N_VERSION=2.44.6
+PREFLIGHT_N8N_VERSION_2=2.40.3
+PREFLIGHT_N8N_VERSION_3=3.0.0
+COMPOSE_PROFILES=sandbox-2,sandbox-3
+```
+
+then `docker compose up -d`. A version without its profile is not started,
+and Preflight lists that slot as a problem instead of using it. Set the
+profiles in `.env` as above, not with `docker compose --profile`: Preflight
+reads `COMPOSE_PROFILES` to know which sandboxes are running, and a
+`--profile` flag never reaches it.
+
+**Before changing or removing a slot's version by hand,** delete that slot's
+scratch database, or n8n starts on a database another version changed and
+says nothing. For slot 2 (use `n8n-sandbox` and
+`preflight-selfhost_n8n-sandbox-data` for slot 1, `-3` or `-4` for the
+others):
+
+```
+docker compose rm -s -f n8n-sandbox-2
+docker volume rm preflight-selfhost_n8n-sandbox-2-data
+```
+
+Then edit `.env` and run `docker compose up -d`. The scratch database holds
+nothing you made. Your recordings, history and settings are in a different
+place and are not touched.
+
 ## Changing the database password
 
 The database reads `POSTGRES_PASSWORD` once, when it is first created, and
@@ -293,8 +356,18 @@ POSTGRES_PASSWORD is missing a value"* until you replace it.
   `.env` disagree, or `.env` still has the old published value. See
   [Changing the database password](#changing-the-database-password).
 - **A replay refuses with two different n8n versions.** `PREFLIGHT_N8N_VERSION`
-  and the version you declared for the instance disagree. Fix whichever is
-  wrong, then `docker compose up -d`.
+  and the version you declared for the instance disagree. If the instance's
+  declared version is wrong, fix it on the instances page. If
+  `PREFLIGHT_N8N_VERSION` is wrong, run **install.cmd** again and change it.
+  To change it by hand instead, reset the sandbox's scratch database at the
+  same time, in this order:
+
+  ```
+  docker compose rm -s -f n8n-sandbox
+  docker volume rm preflight-selfhost_n8n-sandbox-data
+  ```
+
+  then edit `PREFLIGHT_N8N_VERSION` in `.env` and run `docker compose up -d`.
 - **Registration fails with a connection error.** The base URL is wrong for
   where your n8n runs — see step 5.
 
@@ -302,6 +375,9 @@ For anything else, use the report button, and tick **The error on this page**
 if one is showing.
 
 ## What this beta does not do yet
+
+- **Four n8n versions at most**, one sandbox each. Adding one is a restart,
+  not a click: run install.cmd again.
 
 - **One operator token, no user accounts.** Keep Preflight on this computer;
   it listens on `127.0.0.1` only, and the token travels over plain HTTP.

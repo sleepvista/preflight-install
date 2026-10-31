@@ -1,12 +1,14 @@
-# Preflight, pointed at the n8n you already run. Generated for release 0.3.7
+# Preflight, pointed at the n8n you already run. Generated for release 0.3.8
 # from the file the Preflight repository tests; do not edit it by hand.
 #
 #   docker compose up -d
 #
 # Three values are required in .env and the stack refuses to start without
 # them: PREFLIGHT_SECRET, POSTGRES_PASSWORD and PREFLIGHT_N8N_VERSION.
-# INSTALL.md says what each one is, how to get your beta key in, and how to
-# update. The API image is pinned by digest as well as version, so what you
+# Up to three more sandboxes, for other n8n versions, are optional:
+# PREFLIGHT_N8N_VERSION_2 to _4, each with its profile (sandbox-2 to -4) in
+# COMPOSE_PROFILES. install.cmd sets both. INSTALL.md says what each value
+# is, how to get your beta key in, and how to update. The API image is pinned by digest as well as version, so what you
 # pull is exactly what was released.
 
 name: preflight-selfhost
@@ -29,13 +31,15 @@ services:
       timeout: 5s
       retries: 10
   api:
-    image: ghcr.io/sleepvista/preflight-api:0.3.7@sha256:8aa59b8cb4ba23e259186232ed692395c34cd0c11f7dc6fa25558d50840584b3
+    image: ghcr.io/sleepvista/preflight-api:0.3.8@sha256:baeca5f95b37cd3150d73e733a56bb086c464aff77921b4abe4cbfa8949d2766
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-preflight}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in your .env — see INSTALL.md for how to generate one}@postgres:5432/${POSTGRES_DB:-preflight}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in your .env — see INSTALL.md for how to generate one}
       PREFLIGHT_SECRET: ${PREFLIGHT_SECRET:?set PREFLIGHT_SECRET in your .env — see INSTALL.md for how to generate one}
       SANDBOX_N8N_URL: http://n8n-sandbox:5678
-      SANDBOX_N8N_URLS: '{"${PREFLIGHT_N8N_VERSION:?set PREFLIGHT_N8N_VERSION to your n8n version, e.g. 2.36.8}": "http://n8n-sandbox:5678"}'
+      SANDBOX_SLOT_URLS: http://n8n-sandbox:5678,http://n8n-sandbox-2:5678,http://n8n-sandbox-3:5678,http://n8n-sandbox-4:5678
+      PREFLIGHT_SANDBOX_TAGS: ${PREFLIGHT_N8N_VERSION:?set PREFLIGHT_N8N_VERSION to your n8n version, e.g. 2.36.8},${PREFLIGHT_N8N_VERSION_2:-},${PREFLIGHT_N8N_VERSION_3:-},${PREFLIGHT_N8N_VERSION_4:-}
+      PREFLIGHT_SANDBOX_PROFILES: ${COMPOSE_PROFILES:-}
       ALLOW_VERSION_SKEW: ${ALLOW_VERSION_SKEW:-false}
       ALLOW_PRIVATE_INSTANCE_URLS: ${ALLOW_PRIVATE_INSTANCE_URLS:-true}
       ALLOW_INSECURE_INSTANCE_URLS: ${ALLOW_INSECURE_INSTANCE_URLS:-false}
@@ -53,6 +57,9 @@ services:
     networks:
     - default
     - sandbox
+    - sandbox-2
+    - sandbox-3
+    - sandbox-4
     - database
     ports:
     - 127.0.0.1:8000:8000
@@ -65,6 +72,15 @@ services:
         condition: service_healthy
       n8n-sandbox:
         condition: service_healthy
+      n8n-sandbox-2:
+        condition: service_healthy
+        required: false
+      n8n-sandbox-3:
+        condition: service_healthy
+        required: false
+      n8n-sandbox-4:
+        condition: service_healthy
+        required: false
     security_opt:
     - no-new-privileges:true
     cap_drop:
@@ -121,9 +137,144 @@ services:
       interval: 5s
       timeout: 5s
       retries: 30
+  n8n-sandbox-2:
+    image: docker.n8n.io/n8nio/n8n:${PREFLIGHT_N8N_VERSION_2:-slot-2-has-no-version}
+    environment:
+      N8N_PORT: 5678
+      N8N_LISTEN_ADDRESS: 0.0.0.0
+      N8N_SECURE_COOKIE: 'false'
+      N8N_DIAGNOSTICS_ENABLED: 'false'
+      N8N_RUNNERS_ENABLED: 'true'
+      GENERIC_TIMEZONE: ${PREFLIGHT_TIMEZONE:-UTC}
+      TZ: ${PREFLIGHT_TIMEZONE:-UTC}
+      NODE_FUNCTION_ALLOW_BUILTIN: ''
+      NODE_FUNCTION_ALLOW_EXTERNAL: ''
+      N8N_RUNNERS_INSECURE_MODE: 'false'
+      N8N_VERSION_NOTIFICATIONS_ENABLED: 'false'
+      EXECUTIONS_TIMEOUT: '150'
+      EXECUTIONS_TIMEOUT_MAX: '300'
+      N8N_RUNNERS_TASK_TIMEOUT: '150'
+      NODES_EXCLUDE: '["n8n-nodes-base.executeCommand","n8n-nodes-base.localFileTrigger"]'
+      N8N_BLOCK_ENV_ACCESS_IN_NODE: 'true'
+      N8N_RESTRICT_FILE_ACCESS_TO: /home/node/.n8n-files
+      N8N_BLOCK_FILE_ACCESS_TO_N8N_FILES: 'true'
+    networks:
+    - sandbox-2
+    mem_limit: 1g
+    pids_limit: 512
+    cpus: 1.0
+    volumes:
+    - n8n-sandbox-2-data:/home/node/.n8n
+    restart: unless-stopped
+    healthcheck:
+      test:
+      - CMD
+      - node
+      - -e
+      - 'fetch(''http://localhost:5678/healthz'').then((r) => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))'
+      interval: 5s
+      timeout: 5s
+      retries: 30
+    profiles:
+    - sandbox-2
+  n8n-sandbox-3:
+    image: docker.n8n.io/n8nio/n8n:${PREFLIGHT_N8N_VERSION_3:-slot-3-has-no-version}
+    environment:
+      N8N_PORT: 5678
+      N8N_LISTEN_ADDRESS: 0.0.0.0
+      N8N_SECURE_COOKIE: 'false'
+      N8N_DIAGNOSTICS_ENABLED: 'false'
+      N8N_RUNNERS_ENABLED: 'true'
+      GENERIC_TIMEZONE: ${PREFLIGHT_TIMEZONE:-UTC}
+      TZ: ${PREFLIGHT_TIMEZONE:-UTC}
+      NODE_FUNCTION_ALLOW_BUILTIN: ''
+      NODE_FUNCTION_ALLOW_EXTERNAL: ''
+      N8N_RUNNERS_INSECURE_MODE: 'false'
+      N8N_VERSION_NOTIFICATIONS_ENABLED: 'false'
+      EXECUTIONS_TIMEOUT: '150'
+      EXECUTIONS_TIMEOUT_MAX: '300'
+      N8N_RUNNERS_TASK_TIMEOUT: '150'
+      NODES_EXCLUDE: '["n8n-nodes-base.executeCommand","n8n-nodes-base.localFileTrigger"]'
+      N8N_BLOCK_ENV_ACCESS_IN_NODE: 'true'
+      N8N_RESTRICT_FILE_ACCESS_TO: /home/node/.n8n-files
+      N8N_BLOCK_FILE_ACCESS_TO_N8N_FILES: 'true'
+    networks:
+    - sandbox-3
+    mem_limit: 1g
+    pids_limit: 512
+    cpus: 1.0
+    volumes:
+    - n8n-sandbox-3-data:/home/node/.n8n
+    restart: unless-stopped
+    healthcheck:
+      test:
+      - CMD
+      - node
+      - -e
+      - 'fetch(''http://localhost:5678/healthz'').then((r) => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))'
+      interval: 5s
+      timeout: 5s
+      retries: 30
+    profiles:
+    - sandbox-3
+  n8n-sandbox-4:
+    image: docker.n8n.io/n8nio/n8n:${PREFLIGHT_N8N_VERSION_4:-slot-4-has-no-version}
+    environment:
+      N8N_PORT: 5678
+      N8N_LISTEN_ADDRESS: 0.0.0.0
+      N8N_SECURE_COOKIE: 'false'
+      N8N_DIAGNOSTICS_ENABLED: 'false'
+      N8N_RUNNERS_ENABLED: 'true'
+      GENERIC_TIMEZONE: ${PREFLIGHT_TIMEZONE:-UTC}
+      TZ: ${PREFLIGHT_TIMEZONE:-UTC}
+      NODE_FUNCTION_ALLOW_BUILTIN: ''
+      NODE_FUNCTION_ALLOW_EXTERNAL: ''
+      N8N_RUNNERS_INSECURE_MODE: 'false'
+      N8N_VERSION_NOTIFICATIONS_ENABLED: 'false'
+      EXECUTIONS_TIMEOUT: '150'
+      EXECUTIONS_TIMEOUT_MAX: '300'
+      N8N_RUNNERS_TASK_TIMEOUT: '150'
+      NODES_EXCLUDE: '["n8n-nodes-base.executeCommand","n8n-nodes-base.localFileTrigger"]'
+      N8N_BLOCK_ENV_ACCESS_IN_NODE: 'true'
+      N8N_RESTRICT_FILE_ACCESS_TO: /home/node/.n8n-files
+      N8N_BLOCK_FILE_ACCESS_TO_N8N_FILES: 'true'
+    networks:
+    - sandbox-4
+    mem_limit: 1g
+    pids_limit: 512
+    cpus: 1.0
+    volumes:
+    - n8n-sandbox-4-data:/home/node/.n8n
+    restart: unless-stopped
+    healthcheck:
+      test:
+      - CMD
+      - node
+      - -e
+      - 'fetch(''http://localhost:5678/healthz'').then((r) => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))'
+      interval: 5s
+      timeout: 5s
+      retries: 30
+    profiles:
+    - sandbox-4
 networks:
   default: null
   sandbox:
+    internal: true
+    driver_opts:
+      com.docker.network.bridge.gateway_mode_ipv4: isolated
+    enable_ipv6: false
+  sandbox-2:
+    internal: true
+    driver_opts:
+      com.docker.network.bridge.gateway_mode_ipv4: isolated
+    enable_ipv6: false
+  sandbox-3:
+    internal: true
+    driver_opts:
+      com.docker.network.bridge.gateway_mode_ipv4: isolated
+    enable_ipv6: false
+  sandbox-4:
     internal: true
     driver_opts:
       com.docker.network.bridge.gateway_mode_ipv4: isolated
@@ -136,4 +287,7 @@ networks:
 volumes:
   postgres-data: null
   n8n-sandbox-data: null
+  n8n-sandbox-2-data: null
+  n8n-sandbox-3-data: null
+  n8n-sandbox-4-data: null
   preflight-state: null
