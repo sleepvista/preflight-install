@@ -61,6 +61,29 @@ you took before updating.
    fetched already stays in their clone whatever you do — ship `X.Y.Z+1`
    instead.
 
+## 0.3.7 — 2026-10-29
+
+**Database:** unchanged (schema revision `0015_recorded_execution`).
+
+**The Windows installer now starts Docker Desktop on a per-user install.** If
+Docker Desktop was installed "just for me" (under your user folder, not Program
+Files), the installer found it but never started it, and then said it had waited
+3 minutes. It now finds the program, starts it, says what went wrong if it
+cannot, and points at the BIOS setting when virtualization looks switched off.
+The installer also no longer tells you to look in the BIOS for a virtualization
+setting when it is already on. Windows hides that setting once a hypervisor
+(Hyper-V, or what WSL2 and Docker Desktop use) is running, so the old check could
+warn on a machine where everything was fine. It now warns only when no hypervisor
+is running and the firmware setting is off, and it records both answers in
+`install-log.txt`.
+
+**Also in this release:** the deploy gate now re-checks an accepted diff's called
+workflows as it already did for greens, and no longer lets a stale green hide a
+valid accepted replay; a replay that fails early now gives its sandbox slot back
+(repeated failures could previously use them all up until a restart); the
+stress-test replay now recognises renamed nodes and refuses malformed workflows
+like an ordinary replay.
+
 ## 0.3.6 — 2026-10-28
 
 **Database:** changes; head revision `0015_recorded_execution` (one new column

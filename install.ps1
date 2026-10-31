@@ -32,6 +32,11 @@ $script:RequiredKeys = @('PREFLIGHT_SECRET', 'POSTGRES_PASSWORD', 'PREFLIGHT_N8N
 $script:Root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $script:LogPath = Join-Path $script:Root 'install-log.txt'
 $script:Secrets = New-Object System.Collections.ArrayList
+# Why Docker Desktop could not be started, if it could not (Start-DockerDesktop).
+# Set up here because the script runs under StrictMode: reading an unset
+# variable is an error.
+$script:DockerStartFailure = $null
+$script:DockerStartError = ''
 
 # Windows time zone id -> IANA name. Only ever a SUGGESTED default: the
 # installer always asks, because a Windows id can be ambiguous (Mountain
@@ -333,9 +338,33 @@ function Find-Docker {
 }
 
 function Find-DockerDesktop {
+    # Docker Desktop installs per machine (Program Files) or per user (under
+    # %LOCALAPPDATA%\Programs, which is what the installer's own "just for me"
+    # option and some winget runs do). Looking only in Program Files meant a
+    # per-user install was found by Find-Docker and then never started.
+    $candidates = New-Object System.Collections.ArrayList
+    # The most reliable guide is the docker.exe already found: it sits at
+    # <install folder>\resources\bin\docker.exe, and the program is at <install folder>.
+    $docker = Find-Docker
+    if ($docker) {
+        $bin = Split-Path -Parent $docker
+        if ($bin) {
+            $resources = Split-Path -Parent $bin
+            if ($resources) {
+                $root = Split-Path -Parent $resources
+                if ($root) { [void]$candidates.Add((Join-Path $root 'Docker Desktop.exe')) }
+            }
+        }
+    }
+    if ($env:LOCALAPPDATA) {
+        [void]$candidates.Add((Join-Path $env:LOCALAPPDATA 'Programs\DockerDesktop\Docker Desktop.exe'))
+        [void]$candidates.Add((Join-Path $env:LOCALAPPDATA 'Programs\Docker\Docker\Docker Desktop.exe'))
+    }
     foreach ($base in @($env:ProgramFiles, ${env:ProgramFiles(x86)})) {
         if (-not $base) { continue }
-        $candidate = Join-Path $base 'Docker\Docker\Docker Desktop.exe'
+        [void]$candidates.Add((Join-Path $base 'Docker\Docker\Docker Desktop.exe'))
+    }
+    foreach ($candidate in $candidates) {
         if (Test-Path -LiteralPath $candidate) { return $candidate }
     }
     return $null
@@ -359,15 +388,39 @@ function Test-Architecture {
     return (New-Check 'Windows architecture' 'ok' '64-bit')
 }
 
+function Get-VirtualizationCheck {
+    # Windows reports the firmware flag (VirtualizationFirmwareEnabled) as False
+    # whenever a hypervisor is already running (Hyper-V, or the platform WSL2 and
+    # Docker Desktop use), because the firmware flag is hidden once the hypervisor
+    # has taken the feature. So a running hypervisor means virtualization IS on,
+    # whatever the flag says; only "no hypervisor and the flag is off" is a
+    # reason to send someone into the BIOS.
+    param($Firmware, $Hypervisor)
+    if ($Hypervisor -eq $true) {
+        return (New-Check 'Virtualization' 'ok' 'a hypervisor is already running, so virtualization is on')
+    }
+    if ($Firmware -eq $false) {
+        return (New-Check 'Virtualization' 'warn' 'Virtualization looks switched off in the BIOS/UEFI. Docker Desktop needs it and will say so if it cannot start.')
+    }
+    return (New-Check 'Virtualization' 'ok' 'no problem seen')
+}
+
 function Test-Virtualization {
+    $firmware = $null
+    $hypervisor = $null
     try {
         $cpu = Get-CimInstance Win32_Processor -ErrorAction Stop | Select-Object -First 1
-        if ($cpu -and $cpu.VirtualizationFirmwareEnabled -eq $false) {
-            return (New-Check 'Virtualization' 'warn' 'Virtualization looks switched off in the BIOS/UEFI. Docker Desktop needs it and will say so if it cannot start.')
-        }
+        if ($cpu) { $firmware = $cpu.VirtualizationFirmwareEnabled }
     }
     catch { }
-    return (New-Check 'Virtualization' 'ok' 'no problem seen')
+    try {
+        $system = Get-CimInstance Win32_ComputerSystem -ErrorAction Stop | Select-Object -First 1
+        if ($system) { $hypervisor = $system.HypervisorPresent }
+    }
+    catch { }
+    # What this machine reported, so a wrong answer can be diagnosed afterwards.
+    Write-InstallLog "virtualization: firmware flag=$firmware, hypervisor present=$hypervisor"
+    return (Get-VirtualizationCheck -Firmware $firmware -Hypervisor $hypervisor)
 }
 
 function Test-DiskSpace {
@@ -549,10 +602,20 @@ function Install-DockerDesktop {
 }
 
 function Start-DockerDesktop {
+    # $true once the engine answers. Otherwise $false, with the reason in
+    # $script:DockerStartFailure ('not-found', 'would-not-start' or 'timeout')
+    # so the caller says what actually happened. It used to say "did not start in
+    # 3 minutes" when it had not tried at all.
+    $script:DockerStartFailure = $null
     $exe = Find-DockerDesktop
-    if (-not $exe) { return $false }
+    if (-not $exe) { $script:DockerStartFailure = 'not-found'; return $false }
     Write-Note 'Starting Docker Desktop. If a window asks you to accept terms or allow changes, do that.'
-    Start-Process -FilePath $exe | Out-Null
+    try { Start-Process -FilePath $exe | Out-Null }
+    catch {
+        $script:DockerStartFailure = 'would-not-start'
+        $script:DockerStartError = $_.Exception.Message
+        return $false
+    }
     $deadline = (Get-Date).AddMinutes(3)
     while ((Get-Date) -lt $deadline) {
         Start-Sleep -Seconds 5
@@ -561,7 +624,23 @@ function Start-DockerDesktop {
         Write-Host -NoNewline '.'
     }
     Write-Host ''
+    $script:DockerStartFailure = 'timeout'
     return $false
+}
+
+function Get-DockerStartMessage {
+    # What to tell the person when Docker Desktop could not be started.
+    param([string]$Failure, [bool]$VirtualizationOff, [string]$Detail)
+    $open = 'Open Docker Desktop yourself from the Start menu, wait for the whale icon to settle, then run this again.'
+    $text = switch ($Failure) {
+        'not-found' { "I could not find the Docker Desktop program to start it. $open" }
+        'would-not-start' { "Windows would not start Docker Desktop ($Detail). $open" }
+        default { "Docker Desktop did not start within 3 minutes. $open" }
+    }
+    if ($VirtualizationOff) {
+        $text += ' The check above said virtualization looks switched off in the BIOS/UEFI; Docker Desktop cannot run until it is on (look for Intel VT-x, AMD-V or SVM in the BIOS settings).'
+    }
+    return $text
 }
 
 # ---------------------------------------------------------------------------
@@ -741,7 +820,10 @@ function Invoke-Install {
     if ($engineDown) {
         if (Confirm-Yes 'Docker Desktop is not running. Start it now?') {
             if (Start-DockerDesktop) { Write-Ok 'Docker is running.'; $checks = Invoke-Checks; Show-Checks $checks }
-            else { Stop-Install 'Docker Desktop did not start in 3 minutes. Open it yourself, wait for the whale icon to settle, then run this again.' }
+            else {
+                $virtualizationOff = @($checks | Where-Object { $_.Name -eq 'Virtualization' -and $_.Status -eq 'warn' }).Count -gt 0
+                Stop-Install (Get-DockerStartMessage -Failure $script:DockerStartFailure -VirtualizationOff $virtualizationOff -Detail $script:DockerStartError)
+            }
         }
         else { Stop-Install 'Start Docker Desktop, then run this again.' }
     }
