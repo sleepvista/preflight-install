@@ -344,6 +344,21 @@ POSTGRES_PASSWORD is missing a value"* until you replace it.
 
 ## If something goes wrong
 
+- **"This is running from inside the ZIP".** The ZIP was opened rather than
+  extracted. Right-click it, choose **Extract All**, and run **install.cmd**
+  from the extracted folder. (Run from inside the ZIP, the `.env` holding your
+  secrets would sit in a temporary folder Windows deletes.)
+- **"Found Preflight data from an earlier install ... but no complete .env".**
+  The data is locked by secrets in an `.env` that is gone. Restore that `.env`
+  into this folder and run **install.cmd** again. To start over instead, which
+  deletes that data for good:
+
+  ```
+  docker compose -p preflight-selfhost down -v
+  ```
+
+  (`-p preflight-selfhost` is needed: a plain `docker compose down` refuses to
+  run without the `.env`.)
 - **The page does not load.** `docker compose ps` shows what is running;
   `docker compose logs api` says why the API is not. A message naming
   `PREFLIGHT_SECRET` means it is missing or under 16 characters.

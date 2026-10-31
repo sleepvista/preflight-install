@@ -25,7 +25,12 @@ Set-StrictMode -Version 2.0
 # Constants
 # ---------------------------------------------------------------------------
 
-$script:ProjectPrefix = 'preflight-selfhost_'
+# The Compose project the install's docker-compose.yml names. Commands the
+# installer tells a person to type name it with -p, because a plain
+# "docker compose down" reads docker-compose.yml, which refuses to load
+# without the .env whose absence is usually why the command is needed.
+$script:ProjectName = 'preflight-selfhost'
+$script:ProjectPrefix = "$($script:ProjectName)_"
 $script:ApiPort = 8000
 $script:HealthUrl = 'http://127.0.0.1:8000/health'
 $script:RequiredKeys = @('PREFLIGHT_SECRET', 'POSTGRES_PASSWORD', 'PREFLIGHT_N8N_VERSION')
@@ -247,6 +252,23 @@ function Get-InstallState {
         return 'PartlyFilled'
     }
     return 'NeedsVersion'
+}
+
+function Test-RunningFromArchive {
+    # $true when the installer is running from inside a ZIP that was opened
+    # rather than extracted. Windows Explorer (and 7-Zip, WinRAR) copy the
+    # files to a temporary folder for that, and delete it later: the .env
+    # written there, holding the secrets, goes with it, and the next install
+    # finds the data with no key to it. Found on the first real run, 29 Oct.
+    # The test is the shape of those folder names, wherever they are: the
+    # temp folder can be given in its short 8.3 form (C:\Users\MICRO~1\...)
+    # while the script's own path is the long one, so a "starts with %TEMP%"
+    # test would miss it. Names of this shape are not ones a person picks.
+    param([string]$Path)
+    if (-not $Path) { return $false }
+    $full = $Path.TrimEnd('\', '/') + '\'
+    # Explorer: <guid>_<name>.zip.<3 chars>\ ; 7-Zip: 7zO<letters>\ ; WinRAR: Rar$EX<nn>.<nnnn>\
+    return [bool]($full -match '(?i)\\[^\\]*\.zip\.[^\\]+\\|\\7zO[^\\]*\\|\\Rar\$EX[^\\]*\\')
 }
 
 function Test-HealthBody {
@@ -474,16 +496,40 @@ function Test-ComposePlugin {
     return (New-Check 'Docker Compose' 'ok' (($result.Output -join ' ').Trim()))
 }
 
-function Get-PortListener {
-    # The process id listening on the port, or $null. No result means free; the
-    # cmdlet writes an error when nothing listens, which must not be a crash.
+function Test-PortFree {
+    # Whether 127.0.0.1:<port> can be bound: the same thing Docker will try.
+    # Asking Get-NetTCPConnection for listeners is not enough. Docker Desktop's
+    # com.docker.backend holds a published port in a state that cmdlet reports
+    # as blank rather than Listen, so a port another Preflight held read as
+    # free, and the install failed later at "port is already allocated"
+    # (Logan's run, 31 Oct).
     param([int]$Port)
+    $listener = $null
     try {
-        $listener = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1
-        if ($listener) { return [int]$listener.OwningProcess }
+        $listener = New-Object System.Net.Sockets.TcpListener ([System.Net.IPAddress]::Loopback), $Port
+        $listener.Start()
+        return $true
+    }
+    catch { return $false }
+    finally { if ($listener) { try { $listener.Stop() } catch { } } }
+}
+
+function Get-PortOwner {
+    # Who holds the port, in words: a Docker container's name when one
+    # publishes it, otherwise the process. '' when it cannot be told.
+    param([int]$Port)
+    $docker = Find-Docker
+    if ($docker) {
+        $result = Invoke-Native -File $docker -Arguments @('ps', '--filter', "publish=$Port", '--format', '{{.Names}}')
+        $names = @($result.Output | Where-Object { $_ -and $_.Trim() })
+        if ($result.ExitCode -eq 0 -and $names.Count) { return "the Docker container $($names[0])" }
+    }
+    try {
+        $conn = Get-NetTCPConnection -LocalPort $Port -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($conn) { return "process $($conn.OwningProcess) ($((Get-Process -Id $conn.OwningProcess -ErrorAction Stop).ProcessName))" }
     }
     catch { }
-    return $null
+    return ''
 }
 
 function Test-StackRunning {
@@ -497,13 +543,16 @@ function Test-StackRunning {
 }
 
 function Test-Port {
-    param([bool]$StackRunning)
-    $owner = Get-PortListener -Port $script:ApiPort
-    if ($null -eq $owner) { return (New-Check "Port $($script:ApiPort)" 'ok' 'free') }
+    # Untyped on purpose: a [string] parameter turns $null into '', and the
+    # owner would then never be looked up.
+    param([bool]$StackRunning, $Owner = $null, $Free = $null)
+    if ($null -eq $Free) { $Free = Test-PortFree -Port $script:ApiPort }
+    if ($Free) { return (New-Check "Port $($script:ApiPort)" 'ok' 'free') }
     if ($StackRunning) { return (New-Check "Port $($script:ApiPort)" 'ok' 'in use by this Preflight, which is the update path') }
-    $name = ''
-    try { $name = " ($((Get-Process -Id $owner -ErrorAction Stop).ProcessName))" } catch { }
-    return (New-Check "Port $($script:ApiPort)" 'stop' "Something else is using port $($script:ApiPort) (process $owner$name). Close it and run this again.")
+    if ($null -eq $Owner) { $Owner = Get-PortOwner -Port $script:ApiPort }
+    $who = if ($Owner) { $Owner } else { 'another program' }
+    $fix = if ($Owner -like 'the Docker container *') { "Stop it with  docker stop $($Owner.Substring('the Docker container '.Length))  and run this again." } else { 'Close it and run this again.' }
+    return (New-Check "Port $($script:ApiPort)" 'stop' "Port $($script:ApiPort) is already in use by $who, and Preflight needs it. $fix")
 }
 
 function Test-Registry {
@@ -1103,6 +1152,10 @@ function Invoke-Install {
     Write-InstallLog "install.ps1 started in $($script:Root)"
     Write-Host 'Preflight installer'
     Write-Host 'Safe to run again at any point. It never deletes your recordings, workflow history or settings, and never changes a secret in use.'
+    if (Test-RunningFromArchive -Path $script:Root) {
+        Stop-Install ("This is running from inside the ZIP, not from an extracted folder. Windows keeps those files in a temporary folder it deletes later, and your .env, which holds your secrets, would be deleted with it. " +
+            "Close this window, right-click the ZIP, choose Extract All, and run install.cmd from the extracted folder.")
+    }
 
     Write-Step 'Checking this computer'
     $checks = Invoke-Checks
@@ -1138,7 +1191,7 @@ function Invoke-Install {
     switch ($state) {
         'OrphanedData' {
             Stop-Install ("Found Preflight data from an earlier install on this computer, but no complete .env. New secrets would lock you out of that data. " +
-                "Restore your old .env from a backup and run this again. To start over and DELETE that data, run 'docker compose down -v' yourself; this installer never deletes your data.")
+                "Restore your old .env from a backup and run this again. To start over and DELETE that data, run  docker compose -p $($script:ProjectName) down -v  yourself; this installer never deletes your data.")
         }
         'PartlyFilledWithData' {
             Stop-Install ("Your .env is missing a secret and Preflight data already exists. A secret cannot be refilled safely against existing data. " +

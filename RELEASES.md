@@ -61,6 +61,28 @@ you took before updating.
    fetched already stays in their clone whatever you do — ship `X.Y.Z+1`
    instead.
 
+## 0.3.9 — 2026-10-31
+
+**Database:** unchanged (schema revision `0015_recorded_execution`).
+
+**The Windows installer refuses to run from inside the ZIP.** Opening the ZIP
+and double-clicking `install.cmd` without extracting it first runs the
+installer from a temporary folder that Windows deletes later, and your `.env`,
+which holds your secrets, went with it. The next install then found your data
+with no way to unlock it. The installer now stops before writing anything and
+tells you to choose **Extract All** first.
+
+**Starting over after a lost `.env` now has a command that works.** When the
+installer finds Preflight data but no `.env` for it, it used to suggest
+`docker compose down -v`, which itself refuses to run without the `.env`. It
+now says `docker compose -p preflight-selfhost down -v`. That command deletes
+the old data for good; INSTALL.md's "If something goes wrong" has both cases.
+
+**The port check sees a port another Docker container holds.** It used to
+report port 8000 free when another container (another Preflight, for example)
+published it, and the install failed later with "port is already allocated".
+It now names the container and the command to stop it.
+
 ## 0.3.8 — 2026-10-31
 
 **Database:** unchanged (schema revision `0015_recorded_execution`).
